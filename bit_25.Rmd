@@ -100,7 +100,7 @@ Campello, Ricardo JGB, Davoud Moulavi, Arthur Zimek, and Joerg Sander (2013). A 
 ### Synthetic benchmarks performance
 
 We measure the performance of the clustering algorithm on synthetic datasets.
-The performance is evaluated in terms of clustering quality metrics adjusted for chance, such as Adjusted Rand Index (ARI) and Adjusted Mutual Information and compare the result with plain HDBSCAN*.
+The performance is evaluated in terms of clustering quality metrics adjusted for chance, such as Adjusted Rand Index (ARI)  and compare the result with plain HDBSCAN*.
 
 ```{r}
 
@@ -179,7 +179,7 @@ clique_single_linkage<- function(D, min_cluster_size=5){
 
 ```{r}
 library(aricode)
-library(cliquePartitioneR)
+#library(cliquePartitioneR)
 examples<-c( "Atom", "TwoDiamonds", "Target")
 best_per_ex_clq<-list()
 best_per_ex_hdb<-list()
@@ -450,15 +450,12 @@ in combination with 2 clustering algorithms:
 
 We measure the stability by the Adjusted Rand Index (ARI) between the clustering results obtained on the original dataset and on the resampled datasets.
 
-Additionally, we compute the modularity and average conductance [ADD CITATION] of each solution (the bigger the value, the better the clustering is according to the initial similarity $|cor(x,y)|$), using the resamples for uncertainty estimation.
+Additionally, we compute the modularity and average conductance  of each solution (the bigger the value, the better the clustering is according to the initial similarity $|cor(x,y)|$), using the resamples for uncertainty estimation.
+.
 
-#### Test I: sensivity to the repetition number B
+#### Test:
 
-This test applies to the plain and clique-consensus similarity measures, where the number of repetitions $B$ is a parameter.
-
-#### Test II: fixed number of input repetitions B
-
-Here we compare all similarity functions and clustering algorithms, fixing $B$ at ... for consensus measures.
+Here we compare all similarity functions and clustering algorithms, fixing $B$ at 60 for consensus measures.
 
 Parameters of similarity functions:
 
@@ -466,7 +463,7 @@ Parameters of similarity functions:
 - `B` - number of replicates to use
 - `similarity_fun` - base similarity function to use to find each of the `B` partitions
 - `seed` - random seed to use
-- `grouping_function` - a function that takes the symmetric gene similairty matrix as an input, seed and returns the partition of genes   
+- `grouping_function` - a function that takes the symmetric gene similairity matrix as an input, seed and returns the partition of genes   
 - `A` - only for topological overlap (`tom`), precomputed similarity
 
 
@@ -673,7 +670,6 @@ Matching score:
 
 ```{r}
 
-unlapply<- function(...) unlist(lapply(...))
 library(MDFS)
 Y_binary= do.call(cbind,
                   lapply( unique(y),
@@ -777,6 +773,9 @@ labs(
 ```
 
 
+Actual performance metrics (modularity and stability):
+
+
 ```{r}
 library(reshape2)
 melt(PERFORMANCE)-> flat_perf
@@ -787,7 +786,7 @@ levels(flat_perf$metric)= c("modularity","conductance")
 ```{r}
 
 library(ggplot2)
-pdf("performance_brain.pdf")
+#pdf("performance_brain.pdf")
 ggplot(flat_perf[flat_perf$metric=="modularity", ], aes(x = similarity, y = value, fill=algorithm)) +
   geom_boxplot(outlier.shape = NA, color = "gray20",
                position = position_dodge(width = 0.8)) +
@@ -816,7 +815,7 @@ ggplot(flat_perf[flat_perf$metric=="conductance", ], aes(x = similarity, y = val
     strip.text = element_text(face = "bold")
   )
 
-dev.off()
+#dev.off()
 
 
 ```
@@ -876,195 +875,3 @@ ggplot(ARIs_flat, aes(x = similarity, y = value, fill=algorithm)) +
 
 
 
-```{r}
-for (grname in names(group_funs))
-  for (sname in names(simil_funs)){
-    print(sprintf("%s + %s stability= %.3f ", sname,grname,  mean(ARIs[sname,grname,,] )))
-    
-  }
-```
-
-
-```{r}
-X2<- readRDS("gene_expr_data.rds")
-cV2<- apply(X2, 2, var)
-Xs2<- X2[,order(-cV2)[1:400]]
-B=60
-n_repeats=30
-if (!file.exists("consensus_results2.RData")){
-#P2_<- array(NA,dim=c(length(simil_funs),
-#                          length(group_funs),
-#                    n_repeats,
-#                    ncol(Xs2)
-#                    ),
-#                    dimnames=list(
-#                           names(simil_funs),
-#                           names(group_funs),
-#                           1:n_repeats,
-#                           colnames(Xs2)
-#                                      )
-#)
-PERFORMANCE2<- array(NA, dim=c(length(simil_funs),
-                                  length(group_funs),
-                                   length(metrics),
-                                    n_repeats
-                                   ),
-                         dimnames=list(
-                           names(simil_funs),
-                           names(group_funs),
-                           names(metrics),
-                           1:n_repeats
-                                      )
-                         )
-
-
-for (r in 1:n_repeats){
-    t_start=Sys.time()
-    message(sprintf("rep %d /%d ",r,n_repeats))
-    seed=r
-    set.seed(r)
-    X_r<- Xs2[ sample(1:nrow(Xs2), nrow(Xs2), replace=TRUE), ]
-    S_base<- abscor(X_r)
-    #TOM_base<- tom(S_base)
-    for (grname in names(group_funs)){
-      message(grname)
-      group_fun<- group_funs[[grname]]
-      for (sname in names(simil_funs)){
-        message(paste0("   ",sname))
-        sfun<- simil_funs[[sname]]
-         # if (sname=="TOM"){
-         #   invisible()
-         #   sim= TOM_base
-         # }
-         # if (sname=="consensus"){
-         #   sim= consensus_similarity(GE=X_r,B=B,similarity_fun = abscor,seed = seed,grouping_function = group_fun)
-         # message(paste0("   sim done"))
-         # }
-         # if (sname=="clique_consensus"){
-         #   sim= clique_consensus_similairty(GE = X_r, B = B, similarity_fun = abscor, seed = seed)
-         #   message(paste0("   sim done"))
-         # }
-         #P2_[sname, grname,r, ]= group_fun(sim, seed)
-         message(paste0("   grouping done"))
-             for (mname in names(metrics)){
-               metric<- metrics[[mname]]
-               PERFORMANCE2[sname, grname, mname,r  ] = metric(S_base, P2_[sname, grname,r, ] |> uniqueSingletonLabels())
-               message(paste0("        calculated ", mname))
-             }
-          
-        }
-    }
-    save(P2_, PERFORMANCE2, file="consensus_results2.RData")
-  print(Sys.time()-t_start)
-}
-} else {
-  load("consensus_results2.RData")
-}
-```
-
-```{r}
-library(reshape2)
-melt(PERFORMANCE2)-> flat_perf2
-colnames(flat_perf2)<- c("similarity","algorithm","metric","repetition","value")
-head(flat_perf2)
-levels(flat_perf2$metric)= c("modularity","conductance") 
-```
-
-```{r}
-
-library(ggplot2)
-#pdf("performance_breast.pdf")
-ggplot(flat_perf2[flat_perf2$metric=="modularity", ], aes(x = similarity, y = value, fill=algorithm)) +
-  geom_boxplot(outlier.shape = NA, color = "gray20",
-               position = position_dodge(width = 0.8)) +
-  labs(
-    x = "Similarity + Algorithm",
-    y = "Metric Value",
-    title = "modularity"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    strip.text = element_text(face = "bold")
-  ) + coord_cartesian(ylim = c(0, 0.1))
-
-ggplot(flat_perf2[flat_perf2$metric=="conductance", ], aes(x = similarity, y = value, fill=algorithm)) +
-  geom_boxplot(outlier.shape = NA, color = "gray20",
-               position = position_dodge(width = 0.8)) +
-  labs(
-    x = "Similarity + Algorithm",
-    y = "Metric Value",
-    title = "conductance"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    strip.text = element_text(face = "bold")
-  )
-#dev.off()
-
-
-
-```
-
-
-```{r}
-
-ARIs2= array(NA, dim=c(length(simil_funs), length(group_funs), n_repeats, n_repeats  ),
-            dimnames = list(names(simil_funs),
-                            names(group_funs),
-                            1:n_repeats,
-                            1:n_repeats
-                            )
-            )
-
-for (grname in names(group_funs))
-  for (sname in names(simil_funs))
-    for (i in 1:n_repeats)
-      for (j in 1:n_repeats){
-         ((P2_[sname,grname,i,]==0) | (P2_[sname,grname,j,]==0))-> unclustered
-    ARIs2[sname, grname, i,j]= ARI( P2_[sname,grname,i,!unclustered], P2_[sname,grname,j,!unclustered] )
-}
-```
-
-```{r}
-
-ARIs_flat2<- melt(ARIs2)
-ARIs_flat2<- ARIs_flat2[ ARIs_flat2$Var3!= ARIs_flat2$Var4,]
-colnames(ARIs_flat2)<- c("similarity", "algorithm", "i", "j", "value")
-head(ARIs_flat2)
-
-
-```
-
-
-```{r}
-for (grname in names(group_funs))
-  for (sname in names(simil_funs)){
-    print(sprintf("%s + %s stability= %.3f ", sname,grname,  median(ARIs2[sname,grname,,] )))
-    
-  }
-
-```
-
-
-```{r}
-library(ggplot2)
-#pdf("stability_beast.pdf")
-ggplot(ARIs_flat2, aes(x = similarity, y = value, fill=algorithm)) +
-  geom_boxplot(outlier.shape = NA, color = "gray20",
-               position = position_dodge(width = 0.8)) +
-  labs(
-    x = "Similarity + Algorithm",
-    y = "ARI ",
-    title = "stability (brain dataset)"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    strip.text = element_text(face = "bold")
-  )
-
-#dev.off()
-
-```

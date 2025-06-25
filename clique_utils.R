@@ -1,4 +1,6 @@
 
+unlapply<- function(...) unlist(lapply(...))
+
 complexity_score<-function (clique_labels) 
 {
   clique_labels <- uniqueSingletonLabels(clique_labels)
