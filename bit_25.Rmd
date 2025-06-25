@@ -640,8 +640,39 @@ for (r in 1:n_repeats){
   load("consensus_results.RData")}
 ```
 
+How well each gene grouping matches distinct tumor subtypes?
+
+One could argue that the perfect, biologically significant result has the 1-1 matching between each distinct module and each distinct tumor subtype, as far as strongest, statistically significant association is concerned.
+
+For each repetition, we measure such "matching" by computing association of each tumor subtype to each module by usage of $MI$-test (between binary indicator of a subtype and eigengene of each module).
+
+Then, we normalise effect sizes of statistically significant associations separately for each module - because some subtypes are easily associated with any genes.
+
+In the end, according to normalized $MI$, we can find best matching module for each subtype and best matching subtype for each module. 
+If for a particular subtype, we find that the preferences match, we count it as a success and then we repeat this for all repetitions.
+
+Therefore, "matching score" between modules and subtypes for one repetition and one method is defined as number of subtypes (1 to 5) for which their preferred module matches the preferred subtype of that module:
+
+Compute association of each of the 5 subtypes $Y_i$ to each module eigengene $E_k$ by $MI$ test= $A_{ik}= MI(E_k,Y_i) \times [p.value_{ik}<0.05]$
+
+Normalise: $  \widehat{A_{ik}}= A_{ik}/\sum_l A_{il} $ 
+
+Compute preferences: 
+
+$pref_i = \arg max_{k} \widehat{A_{ik}}$
+
+$pref_k = \arg max_{i} \widehat{A_{ik}}$
+
+Matching score:
+
+
+\# of types for which: preference of the module $pref_i$ is the type $Y_i$.
+
+
+
+
 ```{r}
-r=1
+
 unlapply<- function(...) unlist(lapply(...))
 library(MDFS)
 Y_binary= do.call(cbind,
@@ -649,7 +680,10 @@ Y_binary= do.call(cbind,
                           function(v)
                             y==v))
 colnames(Y_binary)<- paste0("type_",unique(y))
+type_matches_list=list()
+for (r in 1:n_repeats){
 MI_matrices=list()
+PV_matrices=list()
 for (grname in names(group_funs))
   for (sname in names(simil_funs)){
     P_[sname,grname,r,] |> uniqueSingletonLabels() |> zeroOutSmall(mS=2)-> P_gsr
@@ -658,19 +692,89 @@ for (grname in names(group_funs))
     eigengenes<-do.call(cbind, lapply(module_labels, function(lab)
                         prcomp(Xs[, P_gsr==lab],rank.=1)$x))
     colnames(eigengenes)<- paste0("module_",module_labels)
-    MI= matrix(nrow=ncol(Y_binary),
+    PV<-MI<- matrix(nrow=ncol(Y_binary),
               ncol=ncol(eigengenes))
-    rownames(MI)<- colnames(Y_binary)
-    colnames(MI)= colnames(eigengenes)
+    rownames(PV)<-rownames(MI)<- colnames(Y_binary)
+    colnames(PV)<-colnames(MI)<- colnames(eigengenes)
     for (cname in colnames(Y_binary)){
       mdfs<-MDFS(data=eigengenes,decision = Y_binary[,cname],seed=123,discretizations = 30,divisions=1,dimensions = 1)
       MI[cname,]= mdfs$statistic
+      PV[cname,]= mdfs$p.value
     }
+    PV[,]<- p.adjust(PV)
+    MI[ PV >= 0.05 ] = 0
     MI_matrices[[paste0(sname,"+",grname)]]=MI
+    
 }
+lapply(MI_matrices, function(mat)
+  apply(mat,2,function(COL) COL/sum(COL)))-> normalised_effectSizes
+lapply(normalised_effectSizes,
+       function(mat)
+         apply(mat,2,function(COL) {if (length(which.max(COL)))
+                                      rownames(mat)[[which.max(COL)]]
+                                  else NA
+           } ))-> best_type
+lapply(normalised_effectSizes,
+       function(mat)
+         apply(mat,1,function(ROW) colnames(mat)[[which.max(ROW)]]))-> best_mod
+
+type_matches<-vector()
+
+for (met in names(best_mod) ){
+   type_matches[[met]]=0
+ for (type in names(best_mod[[met]]))
+   if (( type==best_type[[met]][[ best_mod[[met]][[type]] ]]) &
+       (  best_mod[[met]][[type]] == best_mod[[met]][[ best_type[[met]][[ best_mod[[met]][[type]]  ]]   ]] )
+       )
+     type_matches[[met]]= type_matches[[met]] +1
+   
+   
+}
+type_matches_list[[r]]= type_matches
+}
+```
+
+```{r}
+
+type_matches_summary<-do.call(rbind, type_matches_list)
+melt(type_matches_summary)-> flat_type_matches
+colnames(flat_type_matches)<- c("rep","method","value")
+head(flat_type_matches)
 
 ```
 
+```{r}
+
+table(flat_type_matches$method,
+      flat_type_matches$value) |> as.matrix()-> counts_matrix
+
+melt(counts_matrix)-> flat_counts
+colnames(flat_counts)<-c("method","n_matches","value")
+head(flat_counts)
+
+```
+
+
+
+
+```{r}
+#pdf("tumor_module_matching.pdf", width=8,height=6)
+library(ggplot2)
+ggplot(flat_counts, aes(y=method, x=n_matches, fill=value)) +
+  geom_tile() +
+labs(
+    x = "# matches",
+    y = "similarity + algorithm",
+    title = "perfect matching frequency between \n tumor subtype and a module"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1),
+    strip.text = element_text(face = "bold")
+  ) + geom_text(aes(label=value),color="white") +
+  theme(legend.postition= "none")
+#dev.off()
+```
 
 
 ```{r}
