@@ -153,6 +153,7 @@ clique_single_linkage<- function(D, min_cluster_size=5){
           sub_P
         )
         clique_simil_node2node[sub, sub]<- sub_n2n + clique_simil_node2node[sub, sub]
+        clique_simil_node2node[sub, sub][ sub_n2n==0 ]= 0
     }
   }
   P_hierarchy= c(P_hierarchy, list(P))
@@ -479,7 +480,7 @@ consensus_similarity<- function(GE, B, similarity_fun, seed, grouping_function) 
   for (b in seq_along(bootstrap_indexes)){
     similarity_fun(GE[bootstrap_indexes[[b]], ])-> S_b
     stopifnot(all(!is.na(S_b)))
-    partition_list[[b]]<-grouping_function(S_b, seed=seed)
+    partition_list[[b]]<-uniqueSingletonLabels(grouping_function(S_b, seed=seed))
   }
   CS<- matrix(0, nrow=length(partition_list[[1]]),ncol=length(partition_list[[1]]))
     for (P in partition_list)
@@ -514,6 +515,7 @@ abscor<- function(x) abs(cor(x))
 #grouping function based on dynamicTreeCut
 dtc_grouping<- function(sim, seed){
   hclust(as.dist(1- sim), method="average")-> h_sim
+  h_sim$height<-round(h_sim$height)
   cutreeDynamic(h_sim, minClusterSize = 20, method ="tree")
 }
 #grouping function from Affinity Propagation
@@ -671,11 +673,12 @@ Matching score:
 ```{r}
 
 library(MDFS)
+type_labels<-unique(y_char)
 Y_binary= do.call(cbind,
-                  lapply( unique(y),
+                  lapply( type_labels,
                           function(v)
-                            y==v))
-colnames(Y_binary)<- paste0("type_",unique(y))
+                            y_char==v))
+colnames(Y_binary)<- type_labels
 type_matches_list=list()
 for (r in 1:n_repeats){
 MI_matrices=list()
@@ -703,7 +706,7 @@ for (grname in names(group_funs))
     
 }
 lapply(MI_matrices, function(mat)
-  apply(mat,2,function(COL) COL/sum(COL)))-> normalised_effectSizes
+  apply(mat,1,function(ROW) ROW/sum(ROW)) |> t() )-> normalised_effectSizes
 lapply(normalised_effectSizes,
        function(mat)
          apply(mat,2,function(COL) {if (length(which.max(COL)))
@@ -733,7 +736,7 @@ type_matches_list[[r]]= type_matches
 ```{r}
 
 type_matches_summary<-do.call(rbind, type_matches_list)
-melt(type_matches_summary)-> flat_type_matches
+reshape2::melt(type_matches_summary)-> flat_type_matches
 colnames(flat_type_matches)<- c("rep","method","value")
 head(flat_type_matches)
 
@@ -741,10 +744,17 @@ head(flat_type_matches)
 
 ```{r}
 
-table(flat_type_matches$method,
-      flat_type_matches$value) |> as.matrix()-> counts_matrix
+flat_type_matches$v_fac<- factor(flat_type_matches$value, levels=0:5,ordered=TRUE)
+```
 
-melt(counts_matrix)-> flat_counts
+
+
+```{r}
+
+table(flat_type_matches$method,
+      flat_type_matches$v_fac) |> as.matrix()-> counts_matrix
+
+reshape2::melt(counts_matrix)-> flat_counts
 colnames(flat_counts)<-c("method","n_matches","value")
 head(flat_counts)
 
@@ -767,8 +777,8 @@ labs(
   theme(
     axis.text.x = element_text(angle = 0, hjust = 1),
     strip.text = element_text(face = "bold")
-  ) + geom_text(aes(label=value),color="white") +
-  theme(legend.postition= "none")
+  ) + geom_text(aes(label=value),color="white")  +scale_x_continuous(breaks = unique(flat_counts$n_matches))
+ # theme(legend.postition= "none")
 #dev.off()
 ```
 
@@ -783,6 +793,56 @@ colnames(flat_perf)<- c("similarity","algorithm","metric","repetition","value")
 head(flat_perf)
 levels(flat_perf$metric)= c("modularity","conductance") 
 ```
+
+```{r}
+
+ARIs= array(NA, dim=c(length(simil_funs), length(group_funs), n_repeats, n_repeats  ),
+            dimnames = list(names(simil_funs),
+                            names(group_funs),
+                            1:n_repeats,
+                            1:n_repeats
+                            )
+            )
+
+for (grname in names(group_funs))
+  for (sname in names(simil_funs))
+    for (i in 1:n_repeats)
+      for (j in 1:n_repeats){
+         #((P_[sname,grname,i,]==0) | (P_[sname,grname,j,]==0))-> unclustered
+    ARIs[sname, grname, i,j]= ARI( P_[sname,grname,i,
+                                      #!unclustered,
+                                      ] |> uniqueSingletonLabels(),
+                                      P_[sname,grname,j,
+                                         #!unclustered 
+                                      ]|> uniqueSingletonLabels())
+}
+```
+
+
+
+```{r}
+
+apply(P_[,"DTC",,],c(1,2),function(x) sum(x!=0)/length(x)) |> reshape2::melt() -> clustered_frac
+
+colnames(clustered_frac)<- c("similarity","rep","value")
+
+```
+
+
+
+
+```{r}
+
+ARIs_flat<- melt(ARIs)
+ARIs_flat<- ARIs_flat[ ARIs_flat$Var3!= ARIs_flat$Var4,]
+colnames(ARIs_flat)<- c("similarity", "algorithm", "i", "j", "value")
+head(ARIs_flat)
+
+
+```
+
+
+
 ```{r}
 
 library(ggplot2)
@@ -801,9 +861,23 @@ ggplot(flat_perf[flat_perf$metric=="modularity", ], aes(x = similarity, y = valu
     strip.text = element_text(face = "bold")
   ) + coord_cartesian(ylim = c(0, 0.15))
 
-ggplot(flat_perf[flat_perf$metric=="conductance", ], aes(x = similarity, y = value, fill=algorithm)) +
+# ggplot(flat_perf[flat_perf$metric=="conductance", ], aes(x = similarity, y = value, fill=algorithm)) +
+#   geom_boxplot(outlier.shape = NA, color = "gray20",
+#                position = position_dodge(width = 0.8)) +
+#   labs(
+#     x = "Similarity + Algorithm",
+#     y = "Metric Value",
+#     title = "conductance (brain dataset)"
+#   ) +
+#   theme_minimal(base_size = 14) +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1),
+#     strip.text = element_text(face = "bold")
+#   )
+ggplot(flat_perf[flat_perf$metric=="conductance", ], aes(x = similarity, y = value, fill=algorithm, color=algorithm)) +
   geom_boxplot(outlier.shape = NA, color = "gray20",
                position = position_dodge(width = 0.8)) +
+  #geom_jitter(aes(x=similarity, y=value, color=algorithm, group=algorithm))+
   labs(
     x = "Similarity + Algorithm",
     y = "Metric Value",
@@ -813,45 +887,10 @@ ggplot(flat_perf[flat_perf$metric=="conductance", ], aes(x = similarity, y = val
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1),
     strip.text = element_text(face = "bold")
-  )
+  ) +  coord_cartesian(ylim = c(0.0005, 0.5))+ scale_y_log10()
 
 #dev.off()
 
-
-```
-
-```{r}
-
-ARIs= array(NA, dim=c(length(simil_funs), length(group_funs), n_repeats, n_repeats  ),
-            dimnames = list(names(simil_funs),
-                            names(group_funs),
-                            1:n_repeats,
-                            1:n_repeats
-                            )
-            )
-
-for (grname in names(group_funs))
-  for (sname in names(simil_funs))
-    for (i in 1:n_repeats)
-      for (j in 1:n_repeats){
-         ((P_[sname,grname,i,]==0) | (P_[sname,grname,j,]==0))-> unclustered
-    ARIs[sname, grname, i,j]= ARI( P_[sname,grname,i,!unclustered], P_[sname,grname,j,!unclustered] )
-}
-```
-
-```{r}
-
-ARIs_flat<- melt(ARIs)
-ARIs_flat<- ARIs_flat[ ARIs_flat$Var3!= ARIs_flat$Var4,]
-colnames(ARIs_flat)<- c("similarity", "algorithm", "i", "j", "value")
-head(ARIs_flat)
-
-
-```
-
-
-```{r}
-library(ggplot2)
 #pdf("stability_brain.pdf")
 ggplot(ARIs_flat, aes(x = similarity, y = value, fill=algorithm)) +
   geom_boxplot(outlier.shape = NA, color = "gray20",
@@ -870,7 +909,27 @@ ggplot(ARIs_flat, aes(x = similarity, y = value, fill=algorithm)) +
 
 #dev.off()
 
+#pdf("clustered_fraction.pdf")
+
+ggplot(clustered_frac, aes(x=similarity,y=value, fill="red")) + geom_boxplot() +
+   labs(
+    x = "Similarity",
+    y = "#{genes in clusters}/#{genes} ",
+    title = "fraction of genes DTC method was able to cluster"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+
 ```
+
+
+
+
+
 
 
 
