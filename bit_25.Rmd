@@ -1,9 +1,9 @@
 ---
-title: "Clustering_by_clique_partitioning_BIT_2025"
+title: "Clustering By Clique Paritioning: Clique Similarity Framework"
 output: html_document
 html_document:
     css: styles.css
-date: "2025-06-23"
+date: "2025-17-07"
 ---
 
 ```{r setup, include=FALSE}
@@ -21,7 +21,8 @@ The graph is then partitioned into cliques, i.e. maximal complete subgraphs. The
 
 For fixed $t$, cliques can be built using various approaches -- but for optimal results, clique finding algorithm should take the values of the similarities into the account -- such that nodes in the same clique are more similar to each other than to nodes in other cliques.
 
-The variant we are presenting here, utilizes **complete linkage** hierarchical clustering -- at a specific threshold cutoff, clusters from complete linkage dendrogram, by neccessity, form cliques in the similarity graph.
+One option would be a **complete linkage** hierarchical clustering -- at a specific threshold cutoff, clusters from complete linkage dendrogram, by necessity, form cliques in the similarity graph.
+This, however, is too chaotic in practice. Therefore, whenever we need the stability of the solution (under perturbations such as resampling for graphs build upon statistical pairwise simililarties) we use a greedy algorithm that finds cliques in a sequential manner.
 
 ### Optimal choice of threshold t
 
@@ -33,7 +34,7 @@ Given fixed clique partitioning scheme (**which we assume maximizes the internal
 
 Two possibilities are presented here:
 
-- **minimizing the complexity of the description** of the $G_t$ by the clique partitioning - to balance out the clique size with their number
+- **minimizing the complexity of the description** of the $G_t$ by the clique partitioning - to balance out the clique size with their number. We use this in conjunction with the sequential clique finding algorithm. The details of this criterion are described in depth at Problem II section.
   - *application scenarios* : resulting clusters should be internally dense **globally** (like in convex sets or spherical clusters)
 
 <center>
@@ -67,9 +68,9 @@ $$
 
 (while for $k=l$, obviously denominator is $|C_k||C_k -1|/2$)
 
-## Problem I: clustering in normed vector spaces with nonlinear dependencies
+## Problem I: Locally Dense Forest (LDF) - clustering in normed vector spaces with nonlinear dependencies
 
-We show how this framework can be used to cluster data in normed vector spaces-- typical Euclidean-like spaces, where notions such as "midpoint" of a set and "coordinates" of each object make sense, with a focus on the case where the dependencies between the objects are not linear and coherent clusters are not convex.
+We show how this framework can be used to cluster data in normed vector spaces-- typical Euclidean-like spaces, where notions such as "midpoint" of a set and "coordinates" of each object make sense, with a focus on the case where the dependencies between the objects are not linear and coherent clusters can be non convex.
 
 ### Solution:
 
@@ -78,24 +79,40 @@ We show how this framework can be used to cluster data in normed vector spaces--
 **Parameters:** minimum stable cluster size (in terms number of original objects)
 
 **Output:** optimal flat partition of objects (depending on chosen minimum cluster size), and byproducts:
+- two alternative flat partitions: "coarse" and "fine"
 - multi-level clique similarity of the nodes in the graph
 - cluster dendrogram based on those similarities
 - hierarchy of clique partitions coupled meaningful separation thresholds. 
 Resulting partition assigns some objects to the "noise" set, not truly belonging to any cluster.
 
+$LDF$ consists of Locally Dense Trees, or Clique Trees. The construction of one Locally Dense Tree is as follows:
 
 1. Construct the similarity graph $G_t$ from the pairwise similarities $S_{ij}$, using a threshold $t$ found by $MST$ cirterion.
 2. Partition the graph into cliques using complete linkage hierarchical clustering (cutoff height at $t$).
 3. Compute the clique-based similarity between each pair of cliques.
-4. For each clique which has size < min_cluster_size, apply steps 1-3.
-5. Update clique similarities: add 1 to each similarity of cliques obtained in subdivision at 4.
-6. Repeat 4, if possible.
-7. Construct single-linkage dendrogram from the clique-based similarities.
-8. Extract the flat partition of stable clusters from the dendrogram across all linkage cut thresholds using methodology of Campello (2013).
+4. Construct single-linkage dendrogram from the clique-based similarities.
+5. Extract the flat partition of stable clusters from the dendrogram across all linkage cut thresholds using methodology of Campello (2013). 
 
 
 
 Campello, Ricardo JGB, Davoud Moulavi, Arthur Zimek, and Joerg Sander (2013). A framework for semi-supervised and unsupervised optimal extraction of clusters from hierarchies. Data Mining and Knowledge Discovery 27(3): 344-371. doi:10.1007/s10618-013-0311-4
+
+Now, forest is grown by recursively applying the same procedure to each of the cliques, unless the stopping criterion is reached. 
+
+1. Build base Locally Dense Tree.
+2. For any of the cliques that are larger than the minimum cluster size:
+  - check if it passes the "splitability by MST"* test.
+  - if it does, grow a sub-LDT in place of that clique.
+  - update the final clique partition by replacing the clique with the sub-cliques from the sub-LDT.
+3. After all cliques are processed, we have a forest of Locally Dense Trees, which can be used to extract the flat partition of the data.
+4. Flat partition construction is done by the following steps:
+  - build the clique-based similarity matrix for the final partition, add $+d$ to the values of the similarities' inside the sub-cliques, where $+d$ is the respective recursion depth reached at point 2.
+  - again, construct the single linkage dendrogram of the final cliques using such multi-level clique similarties and extract flat partition of stable clusters from the dendrogram across all linkage cut thresholds using methodology of Campello (2013). This is the "coarse" partition to be returned from the algorithm.
+5. Integrate flat partitions from each of the Clique Trees into a single one, by substituting clusters from the outer layers with the inner ones. This is the "fine" partition to be returned from the algorithm.
+6. Finally, build the "optimal" partition by a greedy optimisation of an objective function:
+  - start with the "coarse" partition as base
+  - for each of the clique trees in the forest, processed according to their depth - from the outermost to the innermost:
+    - update the base partition by replacing the clique with the cluster partition from the respective Clique Tree if it improves the objective function.
 
 ### Synthetic benchmarks performance
 
@@ -103,307 +120,559 @@ We measure the performance of the clustering algorithm on synthetic datasets.
 The performance is evaluated in terms of clustering quality metrics adjusted for chance, such as Adjusted Rand Index (ARI)  and compare the result with plain HDBSCAN*.
 
 ```{r}
-
 library(dbscan)
-library(igraph)
-library(FCPS)
-
 source("clique_utils.R")
 source("CS_dendrogram.R")
 
-clique_single_linkage<- function(D, min_cluster_size=5){
+
+kNNs<- function(D,mcs){
+  apply(D,1,function(x) order(rank(-x),decreasing=TRUE)[1:mcs]  )
+}
+
+SND<- function(D, mcs){
+  neighborhoods<-kNNs(D,mcs)
+  resmat<-D
+  for (x in 1:ncol(neighborhoods))
+    for (y in 1:ncol(neighborhoods)) 
+      resmat[x,y]= sum( neighborhoods[,x]==
+                          neighborhoods[,y])
+  max(resmat) - resmat
+}
+
+mst_thresholds<-function(mst_graph){
+  mst_D<- mst_graph
+  sort( igraph::E(mst_D)$weight, decreasing=TRUE)-> dMSTsorted
+  dMSTsorted<- dMSTsorted[ dMSTsorted!=0 ]
+  ddiffs= -1*(diff(dMSTsorted))
+  dmeans= (dMSTsorted[ 2: length(dMSTsorted) ] + dMSTsorted[ 1: (length(dMSTsorted)-1) ])/2
+  dmeans[order(ddiffs, decreasing = TRUE) ]-> d_t
+  list(thrs=d_t, diffs= ddiffs[ order(ddiffs, decreasing = TRUE) ] )
   
-  #clique partitioning at optimal threshold
+}
+
+
+LDT<- function(D, min_cluster_size, alpha){
   hclust(as.dist(D), method = "complete") -> hcl
   graph_from_adjacency_matrix(D, mode = "undirected", weighted = TRUE, diag=FALSE) -> G_D
   D_mst<- mst(G_D)
-  d_t_vector<- mst_thresholds(D_mst)
-  d_t<- d_t_vector[[1]]
+  mst_thr_data<-mst_thresholds(D_mst)
+  d_t_vector<- mst_thr_data$thrs
+  dd_vector<- mst_thr_data$diffs
+  if (all(d_t_vector==d_t_vector[[1]])) d_t=0 else d_t=d_t_vector[[1]]
   cutree(hcl, h = d_t) -> P
   D_t<-D
   D_t[D > d_t] = 0
-  # clique similarity calculation and dendrogram construction
   cliqueSimilarity(P, (D_t>0)*1. )-> clique_simil
-  # to ensure we weigh stability by the number of actual nodes in the cluster, not cliques
   expand_CS_toNodes(clique_simil, P) -> clique_simil_node2node
-  
-#   max(clique_simil_node2node[lower.tri(clique_simil_node2node)]) -> max_clique_simil
-  P_hierarchy=list(P)
-  clqs<- unique(P)
-  clqSizes<-sapply(clqs, function(clq) sum(P==clq))
-  iter=1
-  while (any(clqSizes > min_cluster_size)){
-    iter=iter+1
-  for (j in seq_along(clqs)) {
-      
-    if (clqSizes[[j]] > min_cluster_size) {
-      
-        clq= clqs[[j]]
-      #  message(sprintf("clq=%d, iter=%d, size=%d",clq, iter, clqSizes[[j]]))
-        sub= P == clq
-        D_sub= D[sub, sub]
-      #  message(sprintf("%s", paste(dim(D_sub))))
-        D_sub_mst<- mst(graph_from_adjacency_matrix(D_sub, mode = "undirected", weighted = TRUE, diag=FALSE))
-        d_t_sub<- mst_thresholds(D_sub_mst)[[1]]
-        cutree(hclust(as.dist(D_sub), method = "complete"), h = d_t_sub) -> sub_P
-        P[sub]= sub_P + max(P)
-        sub_n2n <- expand_CS_toNodes(cliqueSimilarity(sub_P, (D_sub>0)*1.) +
- 0,
-#max_clique_simil*1.1,
-          sub_P
-        )
-        clique_simil_node2node[sub, sub]<- sub_n2n + clique_simil_node2node[sub, sub]
-        clique_simil_node2node[sub, sub][ sub_n2n==0 ]= 0
-    }
-  }
-  P_hierarchy= c(P_hierarchy, list(P))
-   clqs<- unique(P)
-  clqSizes<-sapply(clqs, function(clq) sum(P==clq))
-  }
   hcl_clq<- hclust(as.dist(max(clique_simil_node2node)- clique_simil_node2node), method = "single")
- # hcl_clq<- hclust(as.dist(1- clique_simil), method = "single")
-  # optimal flat partition extraction
-  extractFOSC(hcl_clq, minPts = min_cluster_size, prune_unstable = FALSE)$cluster -> flat_partition
+  clique_simil_node2node[
+    lower.tri(clique_simil_node2node)]-> cs_ltr
+  iter=1
+  cs_ltr[cs_ltr==iter] = 1
+  cs_ltr[ !(cs_ltr %in% c(1,-1)) ] =0 
+  cs_ltr[(cs_ltr==0) ] = -1
+  extractFOSC(hcl_clq, minPts = min_cluster_size, prune_unstable = TRUE,
+              alpha = alpha, constraints = cs_ltr 
+  )$cluster -> flat_partition
   stopifnot(!any(is.na(flat_partition)))
- # for (uq in unique(P))
-#    node_lvl_labels[ P == uq ] <- flat_partition[ uq ]
+  # for (uq in unique(P))
+  #    node_lvl_labels[ P == uq ] <- flat_partition[ uq ]
   return(list(clq=P,
-    cl=flat_partition,
-    cs_n2n=clique_simil_node2node,
-    dtv=d_t_vector,
-    dt=d_t,
-    P_hier=P_hierarchy))
+              cl=flat_partition,
+              cs_n2n=clique_simil_node2node,
+              dtv=d_t_vector,
+              dt=d_t,
+              dd= dd_vector[[1]],
+              ddv= dd_vector
+              ))
+  
   
 }
 
+
+mst_thr_pv<- function(thr_diff, D){
+  matrix(sample( D[lower.tri(D)],100*2,replace=TRUE),ncol=2)-> random_pairs
+  pair_diffs<- abs(rowDiffs(random_pairs))
+  sum(thr_diff >= pair_diffs)/length(pair_diffs)
+}
+
+LDF<- function(D, min_cluster_size,alpha, to_SNN=FALSE,
+               n_nn=7 ){
+  D_orig<- D
+  if (to_SNN) { 
+    mcs_ratio= n_nn/ncol(D)
+    D<- SND(D, mcs=n_nn )
+  }
+  base<-LDT(D,min_cluster_size = min_cluster_size, alpha=alpha)
+  d=0
+  cs_n2n<- base$cs_n2n
+  P= base$clq
+  CL=base$cl
+  P[base$cl==0]=0
+  tree_hierarchy<- list("1,1"=base)
+  clqs<- unique(P[P!=0])
+  #print(table(clqs))
+  splittable<- sapply(clqs, function(x) sum(P==x) > min_cluster_size )
+  #print(splittable)
+  while (any(splittable)){ d= d+1
+ # print(d)
+  for (j in seq_along(clqs))
+  {
+    if (splittable[[j]]){
+      clique<- P== clqs[[j]]
+      D_sub<- D[clique,clique]
+      #if (to_SNN) { D_sub<- SND(D= D_sub, mcs = length(clique)*mcs_ratio) }
+      LDT_dj=LDT( D_sub,
+                  min_cluster_size = min_cluster_size,
+                  alpha=alpha)
+    diff_thr=LDT_dj$dd
+    PV=mst_thr_pv(thr_diff = diff_thr, D = D_sub)
+    #print(PV)
+    if (PV < 0.05) {
+    CL [ clique ] = max(CL) + LDT_dj$cl
+    CL [ clique ][ LDT_dj$cl== 0 ] = 0
+    #  candid_cl<- CL
+    #  candid_cl[ clique ]= max(CL) + LDT_dj$cl
+    #  candid_cl[ clique ][ LDT_dj$cl==0 ] = 0
+    #  candid_objective<- MinST_DunnIndex(partition=candid_cl,dS=D_orig,dX.Y="hausdorff")
+    #  print("####")
+    #  print(base_objective)
+    #  print(candid_objective)
+    #  print("####")
+     # if (candid_objective > base_objective) {
+     #   message("accepted")
+      #  base_objective<-candid_objective
+      #  CL<- candid_cl
+        cs_n2n[ clique, clique ] = LDT_dj$cs_n2n +  d
+        P[ clique ]= max(P) + LDT_dj$clq
+        P[ clique ][ LDT_dj$cl==0 ] = 0
+        LDT_dj$pv= PV
+        LDT_dj$placement = clique
+        tree_hierarchy[[paste0(d+1, clqs[[j]])]]=LDT_dj
+      } else {splittable[[j]]=FALSE}
+    }
+  }
+  new_clqs<-unique(P[P!=0])  
+  new_splittable<- sapply(new_clqs, function(x) sum(P==x) > min_cluster_size)
+  new_splittable[ new_clqs %in% clqs[!splittable] ] = FALSE
+  clqs<-new_clqs
+  splittable<-new_splittable
+  }
+  
+  extractFOSC(hclust(as.dist(max(cs_n2n) - cs_n2n), method = "single"),
+              minPts = min_cluster_size)$cluster-> CL2
+  fin_CL<-CL2
+  base_objective<- MinST_DunnIndex(partition = fin_CL|> uniqueSingletonLabels(),
+                                   dS = D_orig,
+                                   dX.Y = "hausdorff")
+  for (clique_tree in tree_hierarchy){
+    candidatus<- fin_CL 
+    candidatus[ clique_tree$placement ]= CL[ clique_tree$placement ] 
+    candidate_score<- MinST_DunnIndex(partition = candidatus |> uniqueSingletonLabels(),
+                                      dS = D_orig,
+                                      dX.Y = "hausdorff")
+    if (candidate_score>base_objective){
+     base_objective<- candidate_score
+     fin_CL<-candidatus
+    }
+  }
+  
+  list(cl=fin_CL,
+       cs_n2n=cs_n2n,
+       cl_fine=CL,
+       cl_coarse=CL2,
+       clq=P,
+       clique_forest=tree_hierarchy)
+}
 ```
+
 
 ```{r}
 library(aricode)
-#library(cliquePartitioneR)
-examples<-c( "Atom", "TwoDiamonds", "Target")
+library(igraph)
+library(matrixStats)
+library(cliqueClusteR)
+library(FCPS)
+examples<-c( "Atom", "TwoDiamonds", "Target", "Chainlink")
 best_per_ex_clq<-list()
 best_per_ex_hdb<-list()
-#pdf("synthetic_benchmark.pdf", width=8, height=6)
-for (ex in examples[1:3]){
- 
-bunch<- get(ex)
-X<- bunch$Data
-y<- bunch$Cls
- min_cl_sizes= floor(seq(from=3, to= floor(length(y)/2), 
-                   length.out=30))
-D<- as.matrix(dist(X, method = "euclidean"))
-lapply(min_cl_sizes, function(mcl) 
-  clique_single_linkage(D, mcl)
+clq_per_ex<-list()
+for (ex in examples){
+  
+  bunch<- get(ex)
+  X<- bunch$Data
+  y<- bunch$Cls
+  min_cl_sizes= floor(seq(from=3, to= floor(length(y)/2), 
+                          length.out=30))
+  D<- as.matrix(dist(X, method = "euclidean"))
+  lapply(min_cl_sizes, function(mcl) 
+    LDF(D,min_cluster_size = mcl,
+        alpha=1, to_SNN = FALSE)
   )-> clq_cl
-
-ARI_cl<- sapply(clq_cl, function(x) {
-  ARI(y, x$cl)
-})
-
-lapply(min_cl_sizes, function(mcl)
-  hdbscan(X, minPts = mcl))-> hdb_cl
-ARI_hdb<- sapply(hdb_cl, function(x) {
-  ARI(y, x$cluster)
-})
-
-best_clq<- clq_cl[[ which.max(ARI_cl)]]
-best_hdb<- hdb_cl[[ which.max(ARI_hdb)]]
-
-par(mfrow=c(1,1))
-plot(min_cl_sizes, ARI_cl, type="l", 
-     xlab="Minimum cluster size", ylab="ARI",
-     main=paste0("ARI scores \n on ", ex),
-     ylim=c(0,1.1))
-lines(min_cl_sizes, ARI_hdb, col="red", 
-     xlab="Minimum cluster size", ylab="ARI",
-     )
-legend("right", legend = c("CST","HDBSCAN*"),
-lwd=2,col=c("black","red"), bty = "n")
-best_per_ex_hdb[[ex]]<- best_hdb
-best_per_ex_clq[[ex]]<- best_clq
+  clq_per_ex[[ex]]<-clq_cl
+  ARI_cl<- sapply(clq_cl, function(x) {
+    ARI(y, x$cl|> uniqueSingletonLabels())
+  })
+  
+  lapply(min_cl_sizes, function(mcl)
+    hdbscan(X, minPts = mcl))-> hdb_cl
+  ARI_hdb<- sapply(hdb_cl, function(x) {
+    ARI(y, x$cluster|> uniqueSingletonLabels())
+  })
+  
+  best_clq<- clq_cl[[ which.max(ARI_cl)]]
+  best_hdb<- hdb_cl[[ which.max(ARI_hdb)]]
+  
+  par(mfrow=c(1,1))
+  plot(min_cl_sizes, ARI_cl, type="l", 
+       xlab="Minimum cluster size", ylab="ARI",
+       main=paste0("ARI scores \n on ", ex),
+       ylim=c(0,1.1))
+  lines(min_cl_sizes, ARI_hdb, col="red", 
+        xlab="Minimum cluster size", ylab="ARI",
+  )
+  legend("right", legend = c("LDF","HDBSCAN*"),
+         lwd=2,col=c("black","red"), bty = "n")
+  best_per_ex_hdb[[ex]]<- best_hdb
+  best_per_ex_clq[[ex]]<- best_clq
 }
 
 
-par(mfrow=c(1,2))
+#par(mfcol=c(2,4))
 
-for (ex in examples[1:3]) {
+for (ex in examples) {
   best_clq<- best_per_ex_clq[[ex]]
   best_hdb<- best_per_ex_hdb[[ex]]
   bunch<- get(ex)
   X<- bunch$Data
   plot(X, col=best_clq$cl, 
        main=paste0("best Clique-based clustering \n on ", ex)
-       )
+  )
   
   plot(X, col=best_hdb$cluster,
        main=paste0("best HDBSCAN* clustering \n on ", ex)
-       )
+  )
 }
 
-#dev.off()
-
-
 
 ```
 
-- we see less dependency of the clustering quality on the minimum cluster size parameter for the clique-based clustering, compared to HDBSCAN*
-- TwoDiamonds is an example of data on which MST criterion for thresholding is not meaningful in principle, because of few points of contact between the clusters. However, this does not break the procedure - by computing clique similarities (on cliques built using rather arbitrary threshold), proper partition of the set is recovered.
-- Methods look complementary to each other - as far as `min_cluster_size` parameter is concerned
 
+## Microarray data 
 
-### Real-life microarray data
+We use a dataset from currated microarray database (130 samples, 5 tissue types) related to brain cancer. We wish to assess the utility of our method to the real world high-dimensional data and to do this, we measure the correlation of our clique-based clusters to the known tumor subtypes.
+As a reference, we utilize HDBSCAN* clustering algorithm and similarly, we do a scan on the `minimum_cluster_size` parameter, to get the overall sensivity of each method.
 
-We apply the clustering algorithm to a real-life microarray gene expression of brain cancer tissue.
+### Initial filtering
 
-Samples form clear cluster structure in the reduced dimension, with nonlineariies present as hinted by UMAP an t-SNE visualizations (vs plain PCA).
-
-We compare against HDBSCAN* and show results for several dimensionality reduction methods.
+The expression values, to the best knowledge of the authors, are RMA (Robust Multi-array Average) intensities in a log2 scale. 
+The filtering is done by a `gene_preproc.R` script. 
+Main steps include (in that order):
+- intensity filtering (keeping median above 5) to remove signal likely coming from background noise
+- variance filtering (keeping variance above 1.5) - empricial threshold partly based on observed "elbow" of the variances (see plot below)
+- removal of : affymetrix control probes, cross-hybridization probes, probes matching alternative transcripts, probes matching multiple sequences and rare /hypothetical transcripts.
+This establishes a set of 2929 high-quality, biologically meaningful genes, suitable for benchmark study. 
 
 ```{r}
-library(data.table)
-fread("Brain_GSE50161.csv") |> as.data.frame()-> microarray_data
-head(microarray_data)[,1:6]
-X<- microarray_data[,3:ncol(microarray_data)]
-microarray_data$type -> y_char
-y<- as.numeric(factor(y_char))
-colVarsX<- apply(X, 2, var)
-X<- X[, order(colVarsX, decreasing=TRUE)[1:1000]]
+
+source("gene_preproc.R", echo = TRUE) #produces X (expression matrix), y, y_char (labels) 
 
 ```
+
+
+## Problem I - real data test 
+
+### Dimensionality reduction tuning
+
+Methods such as PCA or UMAP as a preprocessing step typically improve performance of clustering in high dimensions. 
+We test these two approaches and for our method- which is graph-based, we also test shared nearest neighborhood similarity (SNN) - common approach for case of high $p$, used for example in Seurat.
+
+All of those methods require parameter tuning and the final result can be sensitive to the choice of those parameters. 
+
+We describe our analysis here:
+
+#### PCA
+
+It is used as a standalone method or as a pre-embedding to the UMAP method.
+We opt for first 20 principal components on the basis of visual inspection. 
+This can be improved upon, for example, by a permutation test analysis such as Parallel Analysis approach.
+
 ```{r}
-as.data.frame(table(y_char))
+
+PCA=prcomp(X, scale.=TRUE)
+plot(PCA$sdev, 
+     xlab="Principal component index",
+     ylab="Standard deviation of the component",
+     main="PCA loadings for brain cancer microarray data",
+     type="b", pch=16, col="blue"
+)
+abline(v=20)
+k=20
+PC= PCA$x[,1:k]
+
 ```
+
+#### UMAP 
+
+Most important parameters here include:
+- number of nearest neighbors( $nn$) - tradeoff between local and global structure preservation
+- minimum distance - controls how tightly the embedding is allowed to pack points together. 
+- dimensions of the embedding $k_u$ - for clustering, we can use much more than 2D or 3D embedding.
+
+Our strategy for picking those parameters is as follows:
+- pick plausible values for the parameters $(nn, k_u)$ by usage of intrinsic dimensionality estimation methods from `Rdimtools` package: $[nn,k_u]= (nn^1, k^1_u), (nn^2, k^2_u) \dots.
+- for the chosen pairs and minimum distance parameter, do a grid search: $[nn, k_u] \times \left( [minDist]=(0.01, 0.3,0.5) \right)$
+
+As for the final criteria on which triplet of the values to choose, we compute the Pearson and Spearman correlation between the pairwise distances in the final embedding and the initial space.
+
+
 ```{r}
-#14243
+
+library(Rdimtools)
 library(umap)
-set.seed(234)
-umap(X, n_neighbors = 8,  n_components = 2, random_state= 234 ) -> umap_res
-#UX<- cmdscale(dist(X))
-UX<- umap_res$layout
-layout_2D<- prcomp(UX, rank. = 2)$x
 
-plot(layout_2D, col=y, pch=16, 
-     main="UMAP projection of  brain dataset",
-     xlab="UMAP1", ylab="UMAP2")
-
-```
-
-
-
-```{r}
-library(Rtsne)
-set.seed(1234)
-Rtsne(X,perplexity=1.9,dims=3)$Y -> TX
-prcomp(TX,rank.=2)$x->l2D
-plot(l2D, col=y, pch=16,
-     main="3D T-sne projection of  brain dataset (2D projected)",
-     xlab="PCA(TSNE)1",ylab="PCA(TSNE)2")
-```
-
-
-
-
-
-```{r}
-mps= floor(seq(from=3, to= length(y) %/% 2, length.out=30))
-ARI_cl_T<-vector()
-ARI_hdb_T<-vector()
-ARI_cl_U<-vector()
-ARI_hdb_U<-vector()
-clq_cl_solutions<-list()
-for (i in seq_along(mps)){
-  mp=mps[[i]]
-hdbscan(TX, minPts = mp) -> hdb_cl_T
-clique_single_linkage(as.matrix(dist(TX)), min_cluster_size = mp) -> clq_cl_T
-hdbscan(UX, minPts = mp) -> hdb_cl_U
-clique_single_linkage(as.matrix(dist(UX)), min_cluster_size = mp) -> clq_cl_U
-hdbscan(X, minPts = mp) -> hdb_cl
-clique_single_linkage(as.matrix(dist(X)), min_cluster_size = mp) -> clq_cl
-clq_cl_solutions[[i]]<-clq_cl
-ARI_cl[[i]]=ARI(clq_cl$cl, y)
-ARI_hdb[[i]]=ARI(hdb_cl$cluster,y)
-ARI_cl_U[[i]]=ARI(clq_cl_U$cl, y)
-ARI_hdb_U[[i]]=ARI(hdb_cl_U$cluster,y)
-ARI_cl_T[[i]]=ARI(clq_cl_T$cl, y)
-ARI_hdb_T[[i]]=ARI(hdb_cl_T$cluster,y)
-#plot(UX, col=clq_cl$cl, pch=16, 
-#     main="Clique-based clustering of leukemia data",
-#     xlab="UMAP1", ylab="UMAP2")
-#plot(UX, col=clq_cl$clq, pch=16, 
-#     main="Clique-based clustering of leukemia data",
-#     xlab="UMAP1", ylab="UMAP2")
-#plot(UX, col=hdb_cl$cluster, pch=16, 
-#     main="HDBSCAN of leukemia data",
-#     xlab="UMAP1", ylab="UMAP2")
+k_2nn<-Rdimtools::est.twonn(PC)
+nn_=seq(from=3,to=ncol(PC)-1,by=1)
+k_nXmethod<-array(NA, dim=c(length(nn_),3))
+set.seed(1244)
+for (n in seq_along(nn_)){
+  message(n)
+  k_nXmethod[n,1]=Rdimtools::est.mle2(PC, k1=nn_[[n]], k2= nn_[[n]]+10)$estdim
+  k_nXmethod[n,2]=Rdimtools::est.danco(PC,k=nn_[[n]])$estdim
+  k_nXmethod[n,3]=Rdimtools::est.nearneighbor1(PC,K= nn_[[n]] )$estdim
 }
+range(c(k_2nn,as.vector(k_nXmethod)))-> ylims
+ylims[[2]]= 6
+plot(nn_, k_nXmethod[,1], type="line", ylim=ylims, xlab="# nearest neighbors")
+lines(nn_,k_nXmethod[,2],col="red")
+lines(nn_,k_nXmethod[,3],col="blue")
+legend("topright", lwd=2, col=c("black","red","blue"), legend=c("mle","danco","NN") )
+
+k_=c(c(5,5,5),rep(4, 2))
+nn_=c(3:5, 10,15)
+stopifnot(length(k_)==length(nn_))
+n_rep=30
+min_dist_ = c(0.01, 0.1, 0.5)
+d_rho<-d_sp<-array(NA, dim=c(length(nn_), length(min_dist_),
+                             n_rep))
+seeds<-sample.int(32423234,size = n_rep,replace = FALSE)
+D_x<- as.matrix(dist(X))
+i=0
+for (n in seq_along(nn_))
+  for (r in seq_along(seeds))
+  for (m in seq_along(min_dist_)){ i=i+1
+    message(sprintf("%d/%d", i, length(nn_)*n_rep*length(min_dist_)))
+    UM<- umap(PC, n_neighbors = nn_[[n]],  n_components = k_[[n]] , min_dist=min_dist_[[m]],
+     random_state= seeds[[r]] )$layout
+    D_u<-as.matrix(dist(UM))
+    d_rho[n,m,r]=cor(D_u[lower.tri(D_u)], D_x[lower.tri(D_x)])
+    d_sp[n,m,r]=cor(D_u[lower.tri(D_u)], D_x[lower.tri(D_x)], method="spearman")
+  }
+
+flat_rho<- melt(d_rho)
+head(flat_rho)
+colnames(flat_rho)<- c("kXn_neigbors","min_dist","rep","value")
+flat_sp<-melt(d_sp)
+colnames(flat_sp)<- c("kXn_neigbors","min_dist","rep","value")
+flat_rho$type="pearson"
+flat_sp$type="spearman"
+flat_RHO= rbind(flat_rho,flat_sp)
+flat_RHO$min_dist<- min_dist_[ flat_RHO$min_dist ] 
+flat_RHO$kXn_neigbors<- paste0( nn_,"x",k_)[ flat_RHO$kXn_neigbors ]
+library(ggplot2)
+ggplot(flat_RHO, aes(x= kXn_neigbors, y= value, 
+                     fill=as.factor(min_dist) )) + geom_boxplot() + facet_wrap(type~.)
+
 
 
 ```
+
+
+```{r}
+UM<-umap(PC, seed=1234, min_dist=0.5, n_neighbors=10, n_components=4)
+UM_UM<- umap(UM$layout, seed=1234, min_dist=0.1, n_neighbors=10,n_components=2)
+
+#plot(UM$layout, pch=16, col= y )
+plot(UM_UM$layout, pch=16, col=y, 
+     main="fine-tuned UMAP projection of brain cancer microarray data \n with 4D embedding reduced to 2D (for visualization purposes)",
+     xlab="UMAP1", ylab="UMAP2"
+     )
+
+```
+
+
+### Final test
+
+#### original space vs PCA
+
 
 ```{r}
 
-#pdf("brain_cancer_cliques.pdf",width=8,height=6)
+min_cl= seq(from=2, to=floor(nrow(X)/2),length.out=30)
 
-plot(mps,ARI_cl, type="l", ylim=c(0,1.1),
-    xlab="min_cluster_size parameter",
-     ylab="ARI", main="original space")
-lines(mps,ARI_hdb, col="red")
-print(sprintf("best clique based= %.2f at mp= %d, \n best HDBSCAN= %.2f at mp= %d" ,max(ARI_cl),mps[[ which.max(ARI_cl)]],
-              max(ARI_hdb),
-              mps[[ which.max(ARI_hdb)]]
-              ))
-legend("topright", legend=c("clique-based","HDBSCAN*"), col=c("black","red"),
-       lwd=2)
-plot(mps,ARI_cl_U, type="l", ylim=c(0,1.1),
-    xlab="min_cluster_size parameter",
-     ylab="ARI", main="under UMAP")
-lines(mps,ARI_hdb_U, col="red")
-legend("topright", legend=c("clique-based","HDBSCAN*"), col=c("black","red"),
-       lwd=2)
-print(sprintf("best clique based= %.2f at mp= %d, \n best HDBSCAN= %.2f at mp= %d" ,max(ARI_cl_U),mps[[ which.max(ARI_cl_U)]],
-              max(ARI_hdb_U),
-              mps[[ which.max(ARI_hdb_U)]]
-              ))
+X_<- list(original=X, PC=PC)
 
-plot(mps,ARI_cl_T, type="l", ylim=c(0,1.1),
-    xlab="min_cluster_size parameter",
-     ylab="ARI", main="under T-sne")
-lines(mps,ARI_hdb_T, col="red")
-legend("topright", legend=c("clique-based","HDBSCAN*"), col=c("black","red"),
-       lwd=2)
-print(sprintf("best clique based= %.2f at mp= %d, \n best HDBSCAN= %.2f at mp= %d" ,max(ARI_cl_T),mps[[ which.max(ARI_cl_T)]],
-              max(ARI_hdb_T),
-              mps[[ which.max(ARI_hdb_T)]]
-              ))
-plot(l2D[,1],l2D[,2], col=clq_cl_solutions[[ which.max(ARI_cl) ]]$cl, 
-     pch=16,
-     main="color=clique-based clusters in original 1000D space \n, coordinates - T-sne embedding",
-     ylab=NA,xlab=NA)
-plot(layout_2D[,1],layout_2D[,2], col=clq_cl_solutions[[ which.max(ARI_cl) ]]$cl, 
-     pch=16,
-     main="color=clique-based clusters in original 1000D space \n, coordinates - UMAP embedding",
-     ylab=NA,xlab=NA
-     )
+ari_methods<- array(NA, dim=c(length(min_cl),
+                              2,
+                              3),
+                    dimnames=list(seq_along(min_cl),
+                                  c("original space","PCA"),
+                                  c("hdbscan","ldf","ldf-snn")))
+
+hdbs<-ldfs<-lapply(seq_along(min_cl), function(x) 
+  list(original=list(), PC=list(), UMAP= list()))
+MCS=6
+for (m in seq_along(min_cl))
+  for (e in 1:2)
+  {
+    message(m)
+    hdbs[[c(m,e)]]<-hdb<- hdbscan(X_[[e]], minPts = min_cl[[m]])
+    sclnn<- LDF(D = SND(
+      as.matrix(dist(X_[[e]])),
+      mcs=MCS),
+      to_SNN = FALSE,
+      min_cluster_size = min_cl[[m]],alpha =1
+      )
+    ldfs[[c(m,e)]]<-scl<- LDF(D =
+                                  as.matrix(dist(X_[[e]])),
+                                 
+                              min_cluster_size = min_cl[[m]],alpha =1,
+                              to_SNN=FALSE)
+    ari_methods[m,e,"hdbscan"]<-ARI(hdb$cluster|>uniqueSingletonLabels(),y)
+    ari_methods[m,e,"ldf"]<- ARI(scl$cl|>uniqueSingletonLabels(),y)
+    ari_methods[m,e,"ldf-snn"]<- ARI(sclnn$cl|>uniqueSingletonLabels(),y)
+  }
+
+melt(ari_methods)-> ari_methods_flat
+#head(ari_methods_flat)
+colnames(ari_methods_flat)<-c("min_cluster_size","space","algorithm","ARI")
+#pdf("PCA_orig.pdf", width=8, height=4)
+
+ggplot(ari_methods_flat[,], aes(x=min_cluster_size, y=ARI, color=algorithm,
+                                lty=algorithm)) + 
+  geom_line(lwd=1) + 
+  facet_wrap(space~., nrow=1) + theme_minimal() 
 #dev.off()
+
+
+```
+
+Conclusion: under relatively high dimension (PCA uses 20 components), LDF benefits from SNN similarity.
+
+#### UMAP
+
+Due to stochastic nature of the embedding method, we repeat the test 30 times and report the median with IQR across each of the tested values of `min_cluster_size`.
+
+```{r}
+
+n_rep=30
+ari_umap<-array(NA, dim=c(length(min_cl),
+                          3,
+                          n_rep),
+                dimnames=list(seq_along(min_cl),
+                              c("hdbscan","ldf","ldf-snn"),
+                              seq_len(n_rep)
+                              ))
+
+set.seed(214)
+seeds_u<- sample.int(3252344, size=n_rep)
+MCS=6
+for (m in seq_along(min_cl))
+  for (r in seq_len(n_rep))
+  {
+    message(sprintf("%d %d",r,m))
+   
+    UM_r<-umap(PC, 
+               n_neighbors = 15,  
+               n_components = 4 , 
+               min_dist=0.5, random_state=seeds_u[[r]])$layout
+    ldf<-LDF(D =
+               as.matrix(dist(UM_r)),
+             min_cluster_size = min_cl[[m]],
+             alpha =1, to_SNN = FALSE)
+    ldf_snn<-LDF(D= SND(D = as.matrix(dist(UM_r)), mcs = MCS),
+             min_cluster_size = min_cl[[m]],
+             alpha=1, to_SNN=FALSE)
+    
+    ari_umap[m,"ldf",r]= ARI(ldf$cl, y)
+    ari_umap[m,"ldf-snn",r]= ARI(ldf_snn$cl, y)
+    hdb<- hdbscan(UM_r, minPts = min_cl[[m]])
+    ari_umap[m,"hdbscan",r]= ARI(hdb$cluster,y)
+   # print(table(ldf$cl_fine,y))
+  #  print(ARI(ldf$cl_fine, y))
+  #  print(table(ldf_snn$cl_fine))
+  #  print(ARI(ldf_snn$cl_fine,y))
+  #  print(table(hdb$cluster))
+  #  print(ARI(hdb$cluster,y))
+    
+  }
+
+
 ```
 
 
+```{r}
+
+reshape2::melt(ari_umap[,,])->flat_ari_umap
+colnames(flat_ari_umap)<- c("minClusterSize","algorithm",
+            "rep",
+                            "ARI")
 
 
-Like on synthetic benchmarks, `min_cluster_size` affects the solution from clique based algorithm to a lesser extent and new algorithm seems to be complementary to `HDBSCAN*` - it often happens that the solution from clique based algorithm is better where `HDBSCAN*` fails - more importantly, we retain higher score on distances in the original high-dimensional space, which reduces the need for problematic nonlinear embedding as a preprocessing step for clustering algorithms. 
+library(ggplot2)
+
+#ggplot(flat_ari_umap, aes(x = minClusterSize, y = ARI, color = algorithm,
+#                          fill = algorithm,lty=algorithm)) +
+#  geom_line(lwd=2)
+#pdf("umap.pdf",width=5,height=4)
+ggplot(flat_ari_umap, aes(x = minClusterSize, y = ARI, color = algorithm, fill = algorithm)) +
+  # Show spread (e.g., interquartile range) as a ribbon
+  stat_summary(
+    fun.min = function(y) quantile(y, 0.25),
+    fun.max = function(y) quantile(y, 0.75),
+    geom = "ribbon",
+    alpha = 0.2,
+    color = NA
+  ) +
+  # Median line
+  stat_summary(
+    fun = median,
+    geom = "line",
+    size = 1
+  ) +
+  # Optional: median points
+  stat_summary(
+    fun = median,
+    geom = "point",
+    size = 2
+  ) +
+  labs(
+    x = "minClusterSize",
+    y = "Adjusted Rand Index (ARI)",
+    title = "UMAP embedding results",
+    color = "Algorithm",
+    fill = "Algorithm"
+  ) +
+  theme_minimal()
+#dev.off()
+
+
+
+```
+
+Conclusion: in the UMAP embedding, LDF and hdbscan are complementary across the range of the `minClusterSize` parameter.
 
 
 ## Problem II: stable clustering of genes according to their correlation strength
 
-Here, we show possible extension of the framework for clustering of coexpression networks [ADD CITATION].
+Here, we show possible extension of the framework for clustering of coexpression networks.
 
-Most crucial aspect of the final quality of the solution is the **resampling stability** of the result -- given datasets of similar characteristics, but obtained using different experiments, clusters from the same cluster should be stable across the datasets, i.e. they should be formed by the same genes.
+Most crucial aspect of the final quality of the solution is the **resampling stability** of the result -- given datasets of similar characteristics, but obtained using different experiments, clusters should be stable across the datasets, i.e. they should be formed by the same genes, regardless of a specific realisation of the experiment, which can be difficult in practice due to inherent noise and extreme sensivity of the experiments to external factors (such as temperature, humidity, etc.).
 
-Ideally, clusters of genes would be mappable to different phenotypes - that can be determined by some external variable, such as tumor subtype.
+Ideally, clusters of genes would be mappable to different phenotypes - that can be determined by some external variable, such as tissue type.
 
 Less important, but still relevant, is the **abstract clustering quality** of the result, taken as a set of "communities" in the input graph - genes inside the same community should be more similar to each other than to genes in other communities.
-We usually have some tradeoff between stability and abstract quality.
+We usually have some trade off between stability and abstract quality.
 
 ### Solution -- clique-consensus similarity measure:
 
@@ -415,7 +684,7 @@ We usually have some tradeoff between stability and abstract quality.
 
 1. Draw with replacement $n$ samples from the input gene expression matrix.
 2. Compute the pairwise similarities $S_{ij}$ between genes $i$ and $j$ based on the sample from 1.
-3. Find optimal threshold $t$ according to description length minimization criterion and cliques using complete linkage at $t$.
+3. Find optimal threshold $t$ according to complexity minimazation criterion* and form cliques using sequential greedy algortihm $t$.
 4. Compute the clique-based similarity between each pair of cliques.
 5. Define the clique-based similarity of genes $i,j$ at sample number $b$ as  $cs_{b}(i,j)$ -- the similarity of the cliques to which $i,j$ belonged at that repetition.
 6. Repeat 1-5 $B$ times and let the final similarity of genes $i,j$ be:
@@ -428,7 +697,43 @@ $$
 
 #### Interpretation:
 
-This approach is the natural extension of the well known, plain "consensus" similarity [ADD CITATION], where the similarity of genes is defined as the fraction of resampling repetitions in which they were assigned to the same cluster.
+This approach is the natural extension of the well known, plain "consensus" similarity, where the similarity of genes is defined as the fraction of resampling repetitions in which they were assigned to the same cluster.
+
+#### Optimal choice of threshold according to complexity minimization criterion:
+
+Algorithm that produces final clique partition proceeds sequentially, processing each node one-by-one. 
+We assume nodes in the input graph are distinguishable from each other, i.e. they have unique identifiers.
+Therefore, final solution on a graph of $p$ nodes, can be encoded as a sequence of $p$ pairs: one identifier for each node and the identifier of the clique to which it belongs.
+
+$S = \{(v_1, c_1)_1, (v_2, c_2)_2, \dots, (v_p, c_p)_p\}$
+
+where $c_j$ is the identifier of the clique to which node $j$ belongs.
+
+Now, consider the space of solutions found from all possible runs of such algorithm on a graph on which the nodes stay fixed, but weights between them can vary. 
+This models the situation of coexpression network clustering.
+Each solution also requires a choice of threshold $t$. 
+We assume a position of total ignorance and let $t$ vary uniformly across the range of weights.
+
+Now we want to assign a probability to a clique partition. 
+Clique partition $P$ encoded as a sequence of labels stays the same, regardless of the processing order of the nodes.
+Since we assume that the clique building algorithm maximizes internal density of each clique (in terms of mean clique weight), at a fixed $t$, the composition of the cliques might vary, but we expect that in general, for a tightly clustered regions of the graph, nodes tend to stay in the same cliques.
+
+We therefore assign probability to a clique partition $P$ in ignorance of the exact values of the weights and count all the possible solutions that lead to a specific clique partition $P$.
+
+$$
+\mathbb{P}(P) \propto \left [ !(\#P) \times \prod_i \#C_i ! \right]
+$$
+Where $P= \left {C_1, C_2 \dots }$ is a clique partition of the graph (including singletons).
+Above says that the probability of $P$ is proportional to the number of sequences of labels (solutions obtained from an algorithm) that lead to the same clique partition $P$.
+
+Now, the information content of an event $A$ is defined as the logarithm of the probability of that event: $\log \mathbb{P}(A)^{-1}$. 
+So the most informative partition is the one that maximizes:
+
+$$
+I(P) = \log \mathbb{P}(P)^{-1} = -\log (\#P)! - \sum_i \log(\#C_i)! + const
+$$
+Define complexity of $P$ as $\log (\#P)! + \sum_i \log(\#C_i)!$. 
+If this quantity is small, the information content of $P$ is big.
 
 ### Results on microarray data
 
@@ -444,28 +749,453 @@ We compare 3 robust similarity functions:
 
 in combination with 2 clustering algorithms:
 
-- dynamicTreeCut (with $TO$ this corresponds to popular WGCNA framework [ADD CITATION]),
+- dynamicTreeCut (with $TO$ this corresponds to popular WGCNA framewor),
 - Affinity Propagation (similarity based algorithm, which does not require the number of clusters to be specified in advance).
 
 #### The testing procedure
 
 We measure the stability by the Adjusted Rand Index (ARI) between the clustering results obtained on the original dataset and on the resampled datasets.
 
-Additionally, we compute the modularity and average conductance  of each solution (the bigger the value, the better the clustering is according to the initial similarity $|cor(x,y)|$), using the resamples for uncertainty estimation.
-.
+Additionally, we compute the modularity of each solution (the bigger the value, the better the clustering is according to the initial similarity $|cor(x,y)|$), using the resamples for uncertainty estimation.
 
-#### Test:
+#### Test steup:
 
-Here we compare all similarity functions and clustering algorithms, fixing $B$ at 60 for consensus measures.
+Input data was preprocessed using `gene_preproc.R`, as discussed earlier at Problem I.
 
-Parameters of similarity functions:
+Here we compare all similarity functions and clustering algorithms, fixing $B$ at 30 for consensus measures.
 
-- `GE` - gene expression matrix, genes - columns, samples -rows
-- `B` - number of replicates to use
-- `similarity_fun` - base similarity function to use to find each of the `B` partitions
-- `seed` - random seed to use
-- `grouping_function` - a function that takes the symmetric gene similairity matrix as an input, seed and returns the partition of genes   
-- `A` - only for topological overlap (`tom`), precomputed similarity
+We repeat the experiment 30 times, this gives 900 resamples needed in total:
+
+```{r}
+
+source("corr_utils.R")
+source("clique_utils.R")
+source("CCS_measure.R")
+source("corr_utils.R")
+library(cliquePartitioneR)
+library(nloptr)
+B<-900
+set.seed(1324)
+BS<- lapply(1:B, function(b) sample(1:nrow(X), nrow(X), replace=TRUE))
+```
+
+
+Then, we compute clique partitions for each of the resampled sets - to be used later. 
+We compared complete linkage hierarchical clustering with our sequential clique building algorithm, for initial stability assesment.  
+
+```{r}
+#initial reference labels on the original set
+D<-1 - cor(X )^2
+S<- corsq(X|> as.matrix())
+hcl<- hclust(as.dist(D), method="complete")
+h_<-bobyqa_optimize_hcl(hcl = hcl,I = range(hcl$height),xtol_abs = min(abs(diff(hcl$height))))
+t_<- 1 - h_
+S_t<- 1- D
+S_t[ S_t < t_ ]=0
+Ph<- cutree(hcl, h=h_)
+Pg<-greedyCliquePartitioner(S_t,expansion_mode = "average", unique_singletonLabels = TRUE)
+#resamples:
+if (file.exists("Ph_.rds") && file.exists("Pg_.rds") && file.exists("t_.rds")){
+   Ph_<- readRDS("Ph_.rds")
+    Pg_<- readRDS("Pg_.rds")
+    t_<- readRDS("t_.rds")
+    message("Precomputed clique partitions loaded.")
+  } else {
+     message("No precomputed clique partitions found, computing them now.")
+  Pg_<- list()
+  Ph_<- list()
+  t_<-vector()
+  for (b in seq_along(BS)){
+    if (((b-1)%%20)==0 ) message(b)
+  start_t<- Sys.time()
+  D<-1 - corfast(X[ BS[[b]],] |> as.matrix() )^2
+  hcl<- hclust(as.dist(D), method="complete")
+  h_opt<-bobyqa_optimize_hcl(hcl = hcl,I = range(hcl$height),xtol_abs = min(abs(diff(hcl$height))))
+  t_[[b]]<-thr<- 1 - h_opt
+  S_t<- 1- D
+  S_t[ S_t < thr ]=0
+  Ph_[[b]]<- cutree(hcl, h=h_opt)
+  Pg_[[b]]<-greedyCliquePartitioner(S_t,expansion_mode = "average", unique_singletonLabels = TRUE)
+  if (((b-1)%%20)==0 ) message(Sys.time() - start_t)
+  }
+  
+  
+  saveRDS(Pg_,"Pg_.rds")
+  saveRDS(Ph_,"Ph_.rds")
+  saveRDS(t_, "t_.rds")
+  }
+  
+library(aricode)
+
+Pg_<- lapply(Pg_, function(x) x$membership)
+ARI_h<- sapply(Ph_, function(ph) ARI(ph,Ph))
+Pg<- Pg$membership
+attributes(Pg)<- NULL
+ARI_g<- sapply(Pg_, function(pg) ARI(pg,Pg))
+
+
+```
+
+```{r}
+print("stability of complete linkage")
+summary(ARI_h)
+print("stability of sequential algorithm")
+summary(ARI_g)
+```
+
+##### Tuning of the parameters for the clustering algortihms
+
+DynamicTreeCut has a vast number of parameters, we use the default values, except for `minClusterSize`, which we fine tune using a two-fold strategy:
+
+- stability in the parameter space- we vary the value and compute pairwise similarity between solutions, regions of stability suggest plausible values for the parameter
+- objective function evaluation - we opt for modularity - as conductance showed neglible variability across the range of `minClusterSize` values.
+
+As far as the Affinity Propagation is concerned, we use the default parameters - we scanned the `preference` parameter, which controls the number of clusters, and found very little difference across different quantiles of the similarities (typical way this parameter is set in practice).
+
+For DTC, in principle, we should pick parameters separately for each similarity functions. We do this here, all on the "basic" similarity network - either computed on original data (for $TO$ measure) or first of 30 resamples (for $CS$ and $CCS$ measures).
+
+For plain consensus - we even need initial value for the `minClusterSize` to use to build each partition in each repetition.
+
+Clustering functions:
+
+```{r}
+library(dynamicTreeCut)
+tom<- function(A) {diag(A)=0; deg<-colSums(A);  (A + A%*%A)/( outer(deg,deg,pmin) +1 - A )  }
+DTC_groups<- function(sim, mcs=20){
+ diag(sim)<-1
+ hcl<-hclust(as.dist(1-sim),method="average")
+ hcl$height=round(hcl$height,10)
+ cutreeDynamic(hcl, minClusterSize = mcs, distM = 1-sim, verbose=0) |> uniqueSingletonLabels()
+}
+```
+
+Useful metrics:
+
+```{r}
+
+ARI_mat<- function(cl_list){
+  ARImat<-matrix(nrow=length(cl_list),ncol=length(cl_list))
+  for (i in seq_along(cl_list))
+    for (j in seq_along(cl_list))
+      ARImat[i,j]= ARI(cl_list[[i]],cl_list[[j]])
+  ARImat
+}
+
+modularity_fromMatrix<- function(W, members){
+  G_W<- graph_from_adjacency_matrix(adjmatrix=W, mode="undirected",
+                                    weighted=TRUE,diag=FALSE)
+  modularity(G_W,membership=members, weights=E(G_W)$weight)
+}
+
+# conductance - abstract cluster quanlity function
+conductance_cluster<- function(A, cl_indicator){
+  diag(A)=0
+  c_s<- A[cl_indicator, 
+          !cl_indicator] |> sum()
+  m_s<- A[cl_indicator,
+          cl_indicator] |> sum()
+  c_s/(2*m_s + c_s)
+}
+
+#visualization utility: plot lines (Values of pointwise metrics) on top of a similarity heatmap
+
+ggheat<- function(array,line_ys,main=NULL){
+  melt(array)-> flat_array
+  colors<-rainbow(length(line_ys))
+  res<-ggplot(flat_array, aes(x=Var1,y=Var2,fill=value))+geom_tile()+ 
+    theme_minimal()#+xlim(min(flat_array$Var1)-0.2*min(flat_array$Var1), max(flat_array$Var1)*1.2 )
+  for (k in seq_along(line_ys)){
+    Yk<-line_ys[[k]]
+    if ((min(Yk)<0)||(max(Yk)>1)) Yk=  (Yk - min(Yk))/(max(Yk)-min(Yk))
+  res<-res+geom_line(data=data.frame(x= flat_array$Var1,
+                                       y= Yk
+                                       ),
+                        aes(x=x,
+                            y= y*max(flat_array$Var2) ),
+              color=colors[[k]],
+              lwd=2,
+              inherit.aes = FALSE)
+  }
+  for (k in seq_along(line_ys)){
+    lab_x<- sort(unique(flat_array$Var1), decreasing = TRUE)[k:(k+1)] |> mean() 
+   # print(lab_x)
+    res<- res+ annotate("text",x = lab_x, y= min(flat_array$Var2), 
+                        label= round(min(line_ys[[k]]),2), color=colors[[k]] )
+    res<- res+ annotate("text",x = lab_x, y= max(flat_array$Var2), 
+                        label= round(max(line_ys[[k]]),2), color=colors[[k]] )
+  }
+  if(!is.null(main)) res<- res + ggtitle(main)
+  res
+}
+
+heatmap_clusters<- function(mat, labs, maxSize=500, zero_thr=1,main=NULL){
+  zeroOutSmall(labs,zero_thr+1)-> labs
+  subs<- 1:ncol(mat)
+  if (length(labs)>maxSize) subs<-sample(1:ncol(mat),maxSize, replace=FALSE)
+  mat<- mat[subs,subs]
+  labs<-labs[subs]
+  mat<- mat[order(labs), order(labs)]
+  labs<-labs[order(labs)]
+  rainbow(length(unique(labs[labs!=0])))-> clrs
+  #print(clrs)
+  side_cols<- rep("gray", length(labs)); k=1
+  for (uql in unique(labs[labs!=0])){ side_cols[labs==uql]= clrs[[k]];k=k+1}
+  heatmap(mat, Rowv=NA,Colv=NA,scale="none",
+          ColSideColors=side_cols,
+          RowSideColors=side_cols,
+          main= main)
+}
+
+
+```
+
+##### Tuning DTC on original data (for the value of `minClusterSize` to use in consensus similarity)
+```{r}
+base_S<- corfast(X|>as.matrix())^2
+
+dtc_par<-list()
+for (param in seq(from=10, to=200, by=10))
+  dtc_par[[length(dtc_par)+1]]= DTC_groups(base_S,mcs = param)
+```
+
+```{r}
+arm<-ARI_mat(dtc_par)
+mod_par<- sapply(dtc_par, function(x) modularity_fromMatrix(W = base_S,members = x))
+
+```
+
+
+Below plot show that the values at the higher end of the scanned range are best. We pick the smallest of them - 160.
+Red line is the modularity value at each point of minimum cluster size from 10 to 200, scanned in steps of length 10.
+
+
+```{r}
+
+ggheat(arm, list(mod_par))
+chosen_mcs_base<- seq(from=10, to=200, by=10)[[16]]
+base_dtc<- dtc_par[[16]]
+heatmap_clusters(base_S,base_dtc, main=sprintf("minClusterSize=%d",chosen_mcs_base))
+
+
+```
+
+##### Initial sweep (30 repetitions to compute similarity measures, parameter tuning)
+
+
+```{r}
+n_rep=30
+CCSg<-matrix(0,nrow=ncol(X),ncol=ncol(X))
+CS<- matrix(0, nrow=ncol(X), ncol=ncol(X))
+for (b in 1:n_rep){
+  message(sprintf("%d/%d",b,n_rep))
+  absCor<- abs(corfast(X[ BS[[b]],]|>as.matrix() ))
+  S_t<- absCor^2
+  TOM<- tom(absCor^2)
+  S_t[ S_t < t_[[b]] ] = 0
+  csg<- cliqueSimilarity(Pg_[[b]], S_t)
+  p_dtc<- DTC_groups(absCor^2, mcs = chosen_mcs_base)
+  CS= CS + outer(p_dtc,p_dtc, function(x,y) as.numeric(x==y))
+  ecsg<- expand_CS_toNodes(csg, cl_mem=Pg_[[b]])
+  #ecsh<- expand_CS_toNodes(csh, cl_mem=Pg_[[b]])
+  CCSg<- CCSg + ecsg
+ # CCSh<-CCSh + ecsh
+  
+}
+CCSg<- CCSg/n_rep
+#CCSh<-CCSh/n_rep
+CS<- CS/n_rep
+
+
+
+```
+
+```{r}
+mcs_range<-seq(10,200,10)
+tom_mcs<-cs_mcs<-ccs_mcs<-list()
+for (m in seq_along(mcs_range)){i
+  tom_mcs[[m]]<-DTC_groups(sim=TOM, mcs = mcs_range[[m]])
+  cs_mcs[[m]]<-DTC_groups(sim=CS, mcs = mcs_range[[m]])
+  ccs_mcs[[m]]<- DTC_groups(sim=CCSg, mcs=mcs_range[[m]])
+}
+
+simXmcs<-list(TO=tom_mcs, CS=cs_mcs, CCS=ccs_mcs)
+
+
+mcs_metrics_df<- data.frame(mcs=mcs_range)
+for (metric in names(simXmcs)){
+  mcs_metrics_df[[paste0(metric,"+","MOD")]]=sapply(simXmcs[[metric]], function(x) 
+                                                    modularity_fromMatrix(base_S,x))
+  mcs_metrics_df[[paste0(metric,"+","cl_frac")]]=sapply(simXmcs[[metric]], function(x)
+                                                          sum(zeroOutSmall(x,2)>0)/length(x))
+}
+
+```
+
+
+```{r}
+ari_mats<-list()
+for (metric in names(simXmcs)){
+  ari_mats[[metric]]= ARI_mat(simXmcs[[metric]])
+                              }
+```
+
+
+```{r}
+for (metric in names(simXmcs)){
+  sub_df<- mcs_metrics_df[, grep(paste0("^",metric),colnames(mcs_metrics_df)) ]
+  print(ggheat(array=ari_mats[[metric]], line_ys = sub_df, main=metric))
+}
+mcs_values<- c(mcs_range[[7]], mcs_range[[16]])
+
+```
+Above plots suggest that 160 is also a good choice for the derived similairty measures. 
+To avoid bias towards modularity, we also include a value of 70 in the test, which has marginally lower value of modularity but is also within a stable region in the parameter space.
+
+##### (additionally) Inspection of the distribution of similarity measures
+
+Interestingly, distribution of clique-consensus is much more smooth from the plain consensus one. 
+
+```{r}
+hist(TOM[lower.tri(TOM)],main="topological overlap")
+hist(CS[lower.tri(CS)], main="plain consensus")
+hist(CCSg[lower.tri(CCSg)], main="clique consensus")
+```
+
+
+```{r}
+heatmap_clusters(mat=base_S, labs = tom_mcs[[7]],main=paste0("TOM",mcs_values[[1]]))
+heatmap_clusters(mat=base_S, labs = cs_mcs[[7]],main=paste0("CS",mcs_values[[1]]))
+heatmap_clusters(mat=base_S, labs = ccs_mcs[[7]],main=paste0("CCS",mcs_values[[1]]))
+heatmap_clusters(mat=base_S, labs = tom_mcs[[16]],main=paste0("TOM",mcs_values[[2]]))
+heatmap_clusters(mat=base_S, labs = cs_mcs[[16]],main=paste0("CS",mcs_values[[2]]))
+heatmap_clusters(mat=base_S, labs = ccs_mcs[[16]],main=paste0("CCS",mcs_values[[2]]))
+```
+##### The final test
+
+We computed DTC for two variants of the parameter and Affinity Propagation for all of the 3 similarity measures on the same set of resamples. 
+DTC was manageable on the desktop computer - code below (took approx. 2.5 hours). 
+Afterwards, AP was run on a HPC cluster concurrently for each repetition (check the `AP_*.R` scripts in the repo).
+As far as the concern with the RNG generation in parallel goes - seeds were set for each repetition.
+Only non-determinisitc aspect of AP is the addition of noise to the similarities, which is not expected to affect the clustering results much, so we neglected the possible correlation in between RNG streams.
+
+```{r}
+
+if (!file.exists("after_mcsXsimXgene.RData")){
+
+mcsXsimXgene<- array(NA, dim = c(length(mcs_values), length(simXmcs),
+                                 B/n_rep,ncol(X) 
+                                 ),
+                     dimnames= list( mcs_values|> as.character(), 
+                                     names(simXmcs),
+                          
+                                     seq_len(B/n_rep),
+                                     colnames(X)
+                                     )
+                     )
+
+mcsXsimXgene["70","TO",1,]= simXmcs$TO[[7]]
+mcsXsimXgene["160","TO",1,]=simXmcs$TO[[16]]
+mcsXsimXgene["70","CS",1,]= simXmcs$CS[[7]]
+mcsXsimXgene["160","CS",1,]=simXmcs$CS[[16]]
+mcsXsimXgene["70","CCS",1,]= simXmcs$CCS[[7]]
+mcsXsimXgene["160","CCS",1,]=simXmcs$CCS[[16]]
+
+  
+
+
+for (r in 2:(B/n_rep)){
+  for (m in seq_along(mcs_values)){
+    mcs= mcs_values[[m]]
+  CCSg<-matrix(0,nrow=ncol(X),ncol=ncol(X))
+ # CCSh<-matrix(0,nrow=ncol(X),ncol=ncol(X))
+ # CS<- matrix(0, nrow=ncol(X), ncol=ncol(X))
+  b_start<- 1 + ( r- 1)*n_rep
+  message(b_start)
+  start_t<- Sys.time()
+ for  (b in c(b_start: (b_start+ (n_rep-1)  ))){
+   #message("############")
+   absCor<- abs(corfast(X[ BS[[b]],]|>as.matrix() ))
+   S_t<- absCor^2
+   S_t[ S_t < t_[[b]] ] = 0
+   csg<- cliqueSimilarity(Pg_[[b]], S_t)
+   #csh<- cliqueSimilarity(Ph_[[b]], S_t)
+  # p_dtc<- DTC_groups(absCor^2, mcs = mcs)
+  # CS= CS + outer(p_dtc,p_dtc, function(x,y) as.numeric(x==y))
+   #message(Sys.time()-start_t)
+   ecsg<- expand_CS_toNodes(csg, cl_mem=Pg_[[b]])
+   #ecsh<- expand_CS_toNodes(csh, cl_mem=Pg_[[b]])
+   #message(Sys.time()-start_t)
+   CCSg<- CCSg + ecsg
+   #CCSh<-CCSh + ecsh
+   #message(Sys.time()-start_t)
+   #if (b==b_start) { TOM<- tom(absCor^2)
+  #   mcsXsimXgene[ m, "TO", r,]= DTC_groups(TOM, mcs = mcs)
+  # }
+ }
+  CCSg<- CCSg/n_rep
+  #CCSh<-CCSh/n_rep
+  #CS<- CS/n_rep
+  #mcsXsimXgene[m,"CS",r,]= DTC_groups(sim=CS, mcs=mcs)
+  mcsXsimXgene[m,"CCS",r,]=DTC_groups(sim=CCSg, mcs=mcs)
+  message(Sys.time()-start_t)
+  }
+  }
+
+
+
+save.image(file="after_mcsXsimXgene.RData")} else {
+  load("after_mcsXsimXgene.RData")
+}
+
+```
+
+```{r}
+
+ARI_matrices<- array(NA, dim=c(2,3,B/n_rep,B/n_rep),
+                     dimnames = list(c("70","160"),
+                                     names(simXmcs),
+                                     seq_len(B/n_rep),
+                                     seq_len(B/n_rep)))
+for (i_mcs in 1:2)
+  for (i_sim in 1:3){
+    ARI_matrices[i_mcs,i_sim,,]=ARI_mat(cl_list = as.data.frame(t(mcsXsimXgene[i_mcs,i_sim,,])))
+    
+  }
+library(reshape2)
+ari_flat<- melt(ARI_matrices)
+colnames(ari_flat)<- c("minClusterSize","similarity","i","j","ARI")
+ari_flat<- ari_flat[ ari_flat$i<ari_flat$j,] 
+library(ggplot2)
+#pdf("DTC_results.pdf",height=3,width=4)
+ggplot(ari_flat, aes(x=similarity, y=ARI, fill=similarity))+geom_boxplot()+
+  facet_wrap(minClusterSize~.) + theme_minimal()+
+  ggtitle("Stability of DynamicTreeCut")
+
+
+performance_array<-array(NA, dim=c(2,3,B/n_rep),
+                          dimnames=list(c("70","160"),
+                                        names(simXmcs),
+                                        seq_len(B/n_rep)))
+
+library(igraph)
+for (m in 1:2)
+  for (sim in names(simXmcs))
+      for (r in seq_len(B/n_rep)){
+      performance_array[m,sim,r]= modularity_fromMatrix(base_S, mcsXsimXgene[m,sim,r,] )
+      message(sprintf("m=%d;sim=%s,r=%d",m,sim,r))
+      }
+
+flat_perf<-melt(performance_array)
+colnames(flat_perf)<-c("minClusterSize","similarity","rep","modularity")
+
+ggplot(flat_perf, aes(x=similarity, y=modularity, fill=similarity))+ geom_boxplot()+
+  facet_wrap(minClusterSize~., scales="free_y") +
+  ggtitle("Abstract cluster quality - DTC") +
+  theme_minimal()
+
+
+```
+
 
 
 ```{r}
