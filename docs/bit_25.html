@@ -2290,7 +2290,7 @@ final similarity of genes <span class="math inline">\(i,j\)</span>
 be:</li>
 </ol>
 <p><span class="math display">\[
-\widehat{cs}(i,j) = \frac{1}{B} \sum_{b=1}^{B} cs_{b}(i,j)
+\widehat{CCS}(i,j) = \frac{1}{B} \sum_{b=1}^{B} cs_{b}(i,j)
 \]</span></p>
 <div id="interpretation" class="section level4">
 <h4>Interpretation:</h4>
@@ -2309,10 +2309,10 @@ Therefore, final solution on a graph of <span class="math inline">\(p\)</span> n
 <span class="math inline">\(p\)</span> pairs: one identifier for each
 node and the identifier of the clique to which it belongs.</p>
 <p><span class="math display">\[
-x_o = \{(v_1, c_1)_1, (v_2, c_2)_2, \dots, (v_p, c_p)_p\}
+x_o = \{(v_{i_1}, c_1)_1, (v_{i_2}, c_2)_2, \dots, (v_{i_p}, c_p)_p\}
 \]</span></p>
 <p>where <span class="math inline">\(c_j\)</span> is the identifier of
-the clique to which node <span class="math inline">\(j\)</span>
+the clique to which node <span class="math inline">\(i_j\)</span>
 belongs.</p>
 <p>Now, consider the space of solutions found from all possible runs of
 such algorithm on a graph on which the nodes stay fixed, but weights can
@@ -2323,7 +2323,7 @@ across the range of weights.</p>
 <p>Now we want to assign a probability to a clique partition. Clique
 partition <span class="math inline">\(P\)</span> encoded as a sequence
 of labels stays the same, regardless of the processing order of the
-nodes. Since we assume that the clique building algorithm maximizes
+nodes within each clique. Since we assume that the clique building algorithm maximizes
 internal density of each clique (in terms of mean clique weight), at a
 fixed <span class="math inline">\(t\)</span>, the composition of the
 cliques might vary, but we expect that in general, for a tightly
@@ -2859,7 +2859,7 @@ concerned.</p>
 association of each type to each module by usage of <span class="math inline">\(MI\)</span>-test (between binary indicator of a
 subtype and eigengene of each module).</p>
 <p>We want to count how many times, the best fitting module for each
-type is the best fitting type for that module. One catch here is that we
+type also chooses that type as its preference. One catch here is that we
 normalize the association strength type-wise. This does not change the
 preference of the type but changes the best fitting type for each
 module. Some of the types are easily discernible by majority of the
